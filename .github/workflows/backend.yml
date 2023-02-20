@@ -1,0 +1,128 @@
+name: Python application
+
+on: [push]
+
+jobs:
+  build-and-test:
+    # runs-on: icts-proxmox-01
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: github_actions
+        ports:
+          - 5432:5432
+        # needed because the postgres container does not provide a healthcheck
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:6
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v2
+      # Disable cache for faster running with self-hosted runners
+      - uses: actions/cache@v2
+        with:
+          path: ~/.cache/pypoetry/virtualenvs
+          key: ${{ runner.os }}-poetry-${{ hashFiles('**/poetry.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-poetry-
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.9
+      - name: Setup Poetry
+        uses: abatilo/actions-poetry@v2.0.0
+        with:
+          poetry-version: 1.1.11
+      - name: psycopg2 prerequisites
+        run: sudo apt-get --assume-yes install libpq-dev python-setuptools
+      - name: Install dependencies
+        run: poetry install
+      - name: Run flake8
+        run: poetry run flake8
+      - name: Run tests
+        run: poetry run coverage run --source='.' manage.py test --noinput && poetry run coverage xml
+        env:
+          ENVIRONMENT: development
+          DJANGO_LOG_LEVEL: DEBUG
+          SECRET_KEY: 2dkvq6s&lin&tr
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_EXPOSE_PORT: 5432
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: 6379
+          AWS_ACCESS_KEY_ID: ${{ secrets.DEV_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DEV_AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION_NAME: ${{ secrets.DEV_AWS_REGION_NAME }}
+          AWS_STORAGE_BUCKET_NAME: ${{ secrets.DEV_AWS_STORAGE_BUCKET_NAME }}
+
+      # Disable upload artifact
+      # - name: Archive code coverage results
+      #   uses: actions/upload-artifact@v2
+      #   with:
+      #     name: code-coverage-report
+      #     path: coverage.xml
+
+  build-deploy-dev:
+    if: ${{ github.ref == 'refs/heads/dev' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create .env and deploy
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.DEV_SSH_HOST }}
+          username: ${{ secrets.DEV_SSH_USER }}
+          key: ${{ secrets.DEV_SSH_KEY }}
+          port: 22232
+          script: |
+            cd todobot.be.dev
+            git pull origin dev
+            docker compose down
+            cat <<EOT > .env
+            ENVIRONMENT=staging
+            DJANGO_LOG_LEVEL=INFO
+            SECRET_KEY=${{ secrets.DEV_SECRET_KEY }}
+
+            RABBITMQ_PROTOCOL=amqp
+            RABBITMQ_HOST=127.0.0.1
+            RABBITMQ_PORT=5181
+            RABBITMQ_MANAGEMENT_EXPOSE_PeORT=15181
+            RABBITMQ_DEFAULT_USER=admin
+            RABBITMQ_DEFAULT_PASS=rabbit@2019
+
+            REDIS_HOST=127.0.0.1
+            REDIS_PORT=16181
+
+            POSTGRES_USER=postgres
+            POSTGRES_PASSWORD=postgres
+            POSTGRES_DB=postgres
+            POSTGRES_HOST=127.0.0.1
+            POSTGRES_EXPOSE_PORT=5141
+
+            ADMINER_PORT=8184
+            DJANGO_PORT=9191
+
+            AWS_ACCESS_KEY_ID = '${{ secrets.DEV_AWS_ACCESS_KEY_ID }}'
+            AWS_SECRET_ACCESS_KEY = '${{ secrets.DEV_AWS_SECRET_ACCESS_KEY }}'
+            AWS_REGION_NAME = '${{ secrets.DEV_AWS_REGION_NAME }}'
+            AWS_STORAGE_BUCKET_NAME = '${{ secrets.DEV_AWS_STORAGE_BUCKET_NAME }}'
+            EOT
+            docker compose up -d
+            screen -ls
+            screen -S be -X stuff '^C'
+            screen -d -r "be" -X stuff $'./manage.py migrate\n'
+            screen -d -r "be" -X stuff $'./manage.py runserver 0.0.0.0:9190\n'

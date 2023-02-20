@@ -1,0 +1,46 @@
+version: "3"
+
+services:
+  # disable to use redis only
+  rabbit:
+    image: rabbitmq:3-management
+    restart: unless-stopped
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+    ports:
+      - "${RABBITMQ_PORT}:5672"
+      - "${RABBITMQ_MANAGEMENT_EXPOSE_PORT}:15672"
+    logging:
+      driver: "none"
+  redis:
+    image: redis:6
+    restart: unless-stopped
+    command: [ "redis-server", "--appendonly", "yes" ]
+    hostname: redis
+    volumes:
+      - ./persistent/redis:/data
+    ports:
+      - ${REDIS_PORT}:6379
+    logging:
+      driver: "none"
+  db:
+    image: postgres:13
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - ./persistent/postgres:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_EXPOSE_PORT}:5432"
+    logging:
+      driver: "none"
+  adminer:
+    image: adminer
+    restart: unless-stopped
+    depends_on:
+      - db
+    ports:
+      - ${ADMINER_PORT:-8080}:8080
